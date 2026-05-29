@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react"
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import type { ImageExportSettings, ProjectionView, VideoExportSettings, ViewerSettings } from "../../core/types"
+import { modelFormatLabel } from "../../shared/supportedFormats"
 import {
   applyBackground,
   applyModelOffset,
@@ -505,7 +506,7 @@ const ViewerCanvas = forwardRef<ViewerCanvasHandle, ViewerCanvasProps>(({ modelO
       {!modelObject && (
         <div className="empty-viewer">
           <div className="empty-viewer__title">3Dファイルをドロップ</div>
-          <div className="empty-viewer__body">OBJ / MTL / 画像 / GLB / GLTF / STL を追加できます</div>
+          <div className="empty-viewer__body">{modelFormatLabel} を追加できます</div>
         </div>
       )}
       <div className="viewport-badge">{settings.camera.view.toUpperCase()}</div>

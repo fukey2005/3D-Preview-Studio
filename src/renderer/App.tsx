@@ -36,10 +36,12 @@ import { appearancePresets, defaultImageExportSettings, defaultVideoExportSettin
 import { assetFromBrowserFile, assetFromPickedFile, formatBytes, revokeAssetUrls } from "../core/fileAssets"
 import { loadModelFromAssets } from "../core/modelLoader"
 import type { PreviewStudioBridge } from "../shared/ipcTypes"
+import { importAccept, importableAssetExtensions } from "../shared/supportedFormats"
 import ViewerCanvas, { type ViewerCanvasHandle } from "./components/ViewerCanvas"
 
 const browserFallbackBridge: PreviewStudioBridge = {
   openFiles: async () => [],
+  openFolder: async () => [],
   async saveDataUrl(payload) {
     const link = document.createElement("a")
     link.href = payload.dataUrl
@@ -94,6 +96,33 @@ const baseColorPresetSet = new Set(baseColorPresets.map((color) => normalizeColo
 
 type ExportMode = "png" | "transparent-png" | "webm" | "mp4"
 
+type DroppedEntryBase = {
+  fullPath?: string
+  isDirectory: boolean
+  isFile: boolean
+  name: string
+}
+
+type DroppedFileEntry = DroppedEntryBase & {
+  isFile: true
+  file: (successCallback: (file: File) => void, errorCallback?: (error: DOMException) => void) => void
+}
+
+type DroppedDirectoryReader = {
+  readEntries: (successCallback: (entries: DroppedEntry[]) => void, errorCallback?: (error: DOMException) => void) => void
+}
+
+type DroppedDirectoryEntry = DroppedEntryBase & {
+  isDirectory: true
+  createReader: () => DroppedDirectoryReader
+}
+
+type DroppedEntry = DroppedFileEntry | DroppedDirectoryEntry | DroppedEntryBase
+
+type BrowserImportFile = File & {
+  previewStudioRelativePath?: string
+}
+
 const imageAspectPresets = [
   { label: "16:9", width: 1920, height: 1080 },
   { label: "4:3", width: 1600, height: 1200 },
@@ -111,6 +140,7 @@ const videoAspectPresets = [
 
 const frameRatePresets = [24, 30, 60]
 const rotationPresets = [1, 2, 3, 4]
+const importableExtensionSet = new Set<string>(importableAssetExtensions)
 
 function normalizeColor(color: string) {
   return color.trim().toLowerCase()
@@ -152,6 +182,84 @@ function groupedAssets(assets: AssetFile[], kind: AssetFile["kind"]) {
 function nameWithoutExtension(name: string) {
   const dotIndex = name.lastIndexOf(".")
   return dotIndex > 0 ? name.slice(0, dotIndex) : name
+}
+
+function extensionFromFileName(name: string) {
+  const dotIndex = name.lastIndexOf(".")
+  return dotIndex > 0 ? name.slice(dotIndex + 1).toLowerCase() : ""
+}
+
+function isImportableBrowserFile(file: File) {
+  return importableExtensionSet.has(extensionFromFileName(file.name))
+}
+
+function cleanDroppedPath(path: string) {
+  return path.replace(/^\/+/, "")
+}
+
+function withDroppedRelativePath(file: File, relativePath?: string): BrowserImportFile {
+  if (!relativePath) return file
+  Object.defineProperty(file, "previewStudioRelativePath", {
+    configurable: true,
+    value: cleanDroppedPath(relativePath),
+  })
+  return file
+}
+
+function isDroppedFileEntry(entry: DroppedEntry): entry is DroppedFileEntry {
+  return entry.isFile && "file" in entry
+}
+
+function isDroppedDirectoryEntry(entry: DroppedEntry): entry is DroppedDirectoryEntry {
+  return entry.isDirectory && "createReader" in entry
+}
+
+function readDroppedFile(entry: DroppedFileEntry) {
+  return new Promise<File>((resolve, reject) => {
+    entry.file(resolve, reject)
+  })
+}
+
+async function readDroppedDirectory(reader: DroppedDirectoryReader) {
+  const entries: DroppedEntry[] = []
+
+  while (true) {
+    const batch = await new Promise<DroppedEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject)
+    })
+    if (batch.length === 0) break
+    entries.push(...batch)
+  }
+
+  return entries
+}
+
+async function filesFromDroppedEntry(entry: DroppedEntry): Promise<BrowserImportFile[]> {
+  if (isDroppedFileEntry(entry)) {
+    const file = await readDroppedFile(entry)
+    return [withDroppedRelativePath(file, entry.fullPath ?? entry.name)]
+  }
+
+  if (!isDroppedDirectoryEntry(entry)) return []
+
+  const childEntries = await readDroppedDirectory(entry.createReader())
+  const nestedFiles = await Promise.all(childEntries.map(filesFromDroppedEntry))
+  return nestedFiles.flat()
+}
+
+async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise<BrowserImportFile[]> {
+  const droppedItems = Array.from(dataTransfer.items ?? [])
+  const entries = droppedItems
+    .map((item) => {
+      const entryProvider = item as unknown as { webkitGetAsEntry?: () => DroppedEntry | null }
+      return entryProvider.webkitGetAsEntry?.() ?? null
+    })
+    .filter((entry): entry is DroppedEntry => Boolean(entry))
+
+  if (entries.length === 0) return Array.from(dataTransfer.files)
+
+  const nestedFiles = await Promise.all(entries.map(filesFromDroppedEntry))
+  return nestedFiles.flat()
 }
 
 function ControlButton({
@@ -377,17 +485,27 @@ export default function App() {
 
   async function addBrowserFiles(files: File[]) {
     if (files.length === 0) return
-    const newAssets = await Promise.all(files.map(assetFromBrowserFile))
-    addAssets(newAssets)
+    const importableFiles = files.filter(isImportableBrowserFile)
+    const skippedCount = files.length - importableFiles.length
+
+    if (importableFiles.length === 0) {
+      setStatus("対応しているファイルが見つかりません")
+      return
+    }
+
+    setError(null)
+    const newAssets = await Promise.all(importableFiles.map(assetFromBrowserFile))
+    addAssets(newAssets, skippedCount > 0 ? `${newAssets.length}件のファイルを追加しました（未対応 ${skippedCount}件を除外）` : undefined)
   }
 
-  function addAssets(newAssets: AssetFile[]) {
+  function addAssets(newAssets: AssetFile[], statusMessage?: string) {
+    setError(null)
     setAssets((current) => [...current, ...newAssets])
     const newestModel = [...newAssets].reverse().find((asset) => asset.kind === "model")
     if (newestModel) {
       setActiveModelId(newestModel.id)
     }
-    setStatus(`${newAssets.length}件のファイルを追加しました`)
+    setStatus(statusMessage ?? `${newAssets.length}件のファイルを追加しました`)
   }
 
   async function openFiles() {
@@ -397,6 +515,17 @@ export default function App() {
     }
 
     const picked = await previewStudio.openFiles()
+    if (picked.length === 0) return
+    addAssets(picked.map(assetFromPickedFile))
+  }
+
+  async function openFolder() {
+    if (!hasNativePreviewBridge) {
+      fileInputRef.current?.click()
+      return
+    }
+
+    const picked = await previewStudio.openFolder()
     if (picked.length === 0) return
     addAssets(picked.map(assetFromPickedFile))
   }
@@ -548,10 +677,13 @@ export default function App() {
 
   function onDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault()
+    const dataTransfer = event.dataTransfer
     setIsDragActive(false)
-    addBrowserFiles(Array.from(event.dataTransfer.files)).catch((dropError) => {
-      setError(dropError instanceof Error ? dropError.message : "ファイル追加に失敗しました")
-    })
+    filesFromDataTransfer(dataTransfer)
+      .then(addBrowserFiles)
+      .catch((dropError) => {
+        setError(dropError instanceof Error ? dropError.message : "ファイル追加に失敗しました")
+      })
   }
 
   return (
@@ -571,7 +703,7 @@ export default function App() {
         className="visually-hidden"
         type="file"
         multiple
-        accept=".obj,.mtl,.png,.jpg,.jpeg,.webp,.glb,.gltf,.bin,.stl"
+        accept={importAccept}
         onChange={(event) => {
           addBrowserFiles(Array.from(event.target.files ?? [])).catch((fileError) => {
             setError(fileError instanceof Error ? fileError.message : "ファイル追加に失敗しました")
@@ -591,6 +723,10 @@ export default function App() {
           <button type="button" className="primary-button" onClick={openFiles}>
             <FolderOpen size={17} />
             Import
+          </button>
+          <button type="button" onClick={openFolder}>
+            <FolderOpen size={17} />
+            Folder
           </button>
           <button type="button" onClick={() => viewerRef.current?.resetView()} disabled={!loadedModel}>
             <RotateCcw size={17} />
@@ -614,7 +750,7 @@ export default function App() {
 
           <div className="asset-drop-hint">
             <Upload size={18} />
-            <span>ファイルをドロップまたはImportで追加</span>
+            <span>ファイルまたはフォルダをドロップして追加</span>
           </div>
 
           <AssetSection title="Models" icon={<Box size={15} />} assets={modelAssets} activeId={activeModelId} onSelect={setActiveModelId} onDelete={deleteAsset} />

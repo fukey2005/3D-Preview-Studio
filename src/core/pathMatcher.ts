@@ -19,6 +19,12 @@ export function baseNameWithoutExtension(value: string) {
   return dotIndex > 0 ? name.slice(0, dotIndex) : name
 }
 
+export function extensionFromPath(value: string) {
+  const name = baseName(value)
+  const dotIndex = name.lastIndexOf(".")
+  return dotIndex > 0 ? name.slice(dotIndex + 1).toLowerCase() : ""
+}
+
 export function matchAssetByPath(assets: AssetFile[], requestedPath: string, kinds?: AssetFile["kind"][]) {
   const requested = normalizeAssetPath(requestedPath).toLowerCase()
   const requestedName = baseName(requested).toLowerCase()

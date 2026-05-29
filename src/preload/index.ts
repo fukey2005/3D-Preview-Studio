@@ -3,6 +3,7 @@ import type { PreviewStudioBridge, SaveBinaryPayload, SaveDataUrlPayload, SaveMp
 
 const bridge: PreviewStudioBridge = {
   openFiles: () => ipcRenderer.invoke("dialog:openFiles"),
+  openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
   saveDataUrl: (payload: SaveDataUrlPayload) => ipcRenderer.invoke("file:saveDataUrl", payload),
   saveBinary: (payload: SaveBinaryPayload) => ipcRenderer.invoke("file:saveBinary", payload),
   saveMp4FromWebm: (payload: SaveMp4FromWebmPayload) => ipcRenderer.invoke("video:saveMp4FromWebm", payload),

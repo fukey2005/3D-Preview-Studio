@@ -1,16 +1,19 @@
 import type { PickedFile } from "../shared/ipcTypes"
+import { binaryExtensions, materialExtensions, modelExtensions, textureExtensions } from "../shared/supportedFormats"
 import type { AssetFile, AssetKind } from "./types"
 
-const textExtensions = new Set(["obj", "mtl", "gltf"])
-const modelExtensions = new Set(["obj", "glb", "gltf", "stl"])
-const textureExtensions = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga"])
+const textExtensions = new Set(["obj", "mtl", "gltf", "dae"])
+const modelExtensionSet = new Set<string>(modelExtensions)
+const materialExtensionSet = new Set<string>(materialExtensions)
+const textureExtensionSet = new Set<string>(textureExtensions)
+const binaryExtensionSet = new Set<string>(binaryExtensions)
 
 export function classifyAsset(extension: string): AssetKind {
   const normalized = extension.toLowerCase()
-  if (modelExtensions.has(normalized)) return "model"
-  if (normalized === "mtl") return "material"
-  if (textureExtensions.has(normalized)) return "texture"
-  if (normalized === "bin") return "binary"
+  if (modelExtensionSet.has(normalized)) return "model"
+  if (materialExtensionSet.has(normalized)) return "material"
+  if (textureExtensionSet.has(normalized)) return "texture"
+  if (binaryExtensionSet.has(normalized)) return "binary"
   return "unknown"
 }
 
@@ -30,12 +33,29 @@ export function mimeFromExtension(extension: string) {
       return "image/webp"
     case "gif":
       return "image/gif"
+    case "tx":
+      return "application/octet-stream"
     case "glb":
       return "model/gltf-binary"
     case "gltf":
       return "model/gltf+json"
     case "stl":
       return "model/stl"
+    case "ply":
+      return "model/ply"
+    case "dae":
+      return "model/vnd.collada+xml"
+    case "fbx":
+      return "model/fbx"
+    case "3mf":
+      return "model/3mf"
+    case "usdz":
+      return "model/vnd.usdz+zip"
+    case "step":
+    case "stp":
+      return "model/step"
+    case "blend":
+      return "application/x-blender"
     case "obj":
     case "mtl":
       return "text/plain"
@@ -44,16 +64,25 @@ export function mimeFromExtension(extension: string) {
   }
 }
 
+type BrowserFileWithPath = File & {
+  path?: string
+  previewStudioRelativePath?: string
+  webkitRelativePath?: string
+}
+
 export async function assetFromBrowserFile(file: File): Promise<AssetFile> {
+  const browserFile = file as BrowserFileWithPath
   const extension = extensionFromName(file.name)
   const buffer = await file.arrayBuffer()
   const text = textExtensions.has(extension) ? await file.text() : undefined
+  const path = browserFile.previewStudioRelativePath || browserFile.webkitRelativePath || browserFile.path
 
   return {
     id: crypto.randomUUID(),
     name: file.name,
     extension,
     kind: classifyAsset(extension),
+    path: path || undefined,
     size: file.size,
     addedAt: Date.now(),
     buffer,

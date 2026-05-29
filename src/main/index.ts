@@ -5,11 +5,13 @@ import { createRequire } from "node:module"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { importableAssetExtensions } from "../shared/supportedFormats.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const require = createRequire(import.meta.url)
 const bundledFfmpegPath = require("ffmpeg-static") as string | null
+const importableAssetExtensionSet = new Set<string>(importableAssetExtensions)
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 
@@ -80,6 +82,23 @@ async function readPickedFile(filePath: string) {
   }
 }
 
+async function collectSupportedFiles(directoryPath: string): Promise<Awaited<ReturnType<typeof readPickedFile>>[]> {
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true })
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(directoryPath, entry.name)
+      if (entry.isDirectory()) return collectSupportedFiles(entryPath)
+      if (!entry.isFile()) return []
+
+      const extension = path.extname(entryPath).replace(".", "").toLowerCase()
+      if (!importableAssetExtensionSet.has(extension)) return []
+      return [await readPickedFile(entryPath)]
+    }),
+  )
+
+  return files.flat()
+}
+
 function dataUrlToBuffer(dataUrl: string) {
   const base64 = dataUrl.split(",")[1]
   if (!base64) {
@@ -127,7 +146,7 @@ function setupIpc() {
       filters: [
         {
           name: "3D assets",
-          extensions: ["obj", "mtl", "png", "jpg", "jpeg", "webp", "glb", "gltf", "bin", "stl"],
+          extensions: [...importableAssetExtensions],
         },
         { name: "All files", extensions: ["*"] },
       ],
@@ -135,6 +154,17 @@ function setupIpc() {
 
     if (result.canceled) return []
     return Promise.all(result.filePaths.map(readPickedFile))
+  })
+
+  ipcMain.handle("dialog:openFolder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Open 3D asset folder",
+      properties: ["openDirectory", "multiSelections"],
+    })
+
+    if (result.canceled) return []
+    const files = await Promise.all(result.filePaths.map(collectSupportedFiles))
+    return files.flat()
   })
 
   ipcMain.handle("file:saveDataUrl", async (_event, payload: { defaultPath: string; dataUrl: string; filters?: Electron.FileFilter[] }) => {

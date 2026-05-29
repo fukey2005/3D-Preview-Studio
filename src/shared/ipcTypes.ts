@@ -31,6 +31,7 @@ export type SaveMp4FromWebmPayload = {
 
 export type PreviewStudioBridge = {
   openFiles: () => Promise<PickedFile[]>
+  openFolder: () => Promise<PickedFile[]>
   saveDataUrl: (payload: SaveDataUrlPayload) => Promise<{ canceled: boolean; filePath?: string }>
   saveBinary: (payload: SaveBinaryPayload) => Promise<{ canceled: boolean; filePath?: string }>
   saveMp4FromWebm: (payload: SaveMp4FromWebmPayload) => Promise<{ canceled: boolean; filePath?: string }>
