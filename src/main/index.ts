@@ -113,12 +113,21 @@ function getFfmpegPath() {
   return bundledFfmpegPath.replace("app.asar", "app.asar.unpacked")
 }
 
-function runFfmpeg(args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(getFfmpegPath(), args, {
+function arrayBufferFromBuffer(data: Buffer) {
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+}
+
+function runProcess(command: string, args: string[]) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(command, args, {
       windowsHide: true,
     })
+    let stdout = ""
     let stderr = ""
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk)
+    })
 
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk)
@@ -130,12 +139,152 @@ function runFfmpeg(args: string[]) {
 
     child.on("close", (code) => {
       if (code === 0) {
-        resolve()
+        resolve({ stdout, stderr })
         return
       }
-      reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`))
+      reject(new Error(stderr.trim() || stdout.trim() || `${command} exited with code ${code}`))
     })
   })
+}
+
+function runFfmpeg(args: string[]) {
+  return runProcess(getFfmpegPath(), args).then(() => undefined)
+}
+
+async function existingFile(filePath: string) {
+  try {
+    await fs.access(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function collectMacBlenderCandidates() {
+  const roots = ["/Applications", path.join(os.homedir(), "Applications")]
+  const candidates: string[] = []
+
+  for (const root of roots) {
+    let entries: import("node:fs").Dirent[]
+    try {
+      entries = await fs.readdir(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^Blender.*\.app$/i.test(entry.name)) continue
+      candidates.push(path.join(root, entry.name, "Contents/MacOS/Blender"))
+    }
+  }
+
+  return candidates
+}
+
+async function collectWindowsBlenderCandidates() {
+  const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA].filter(Boolean) as string[]
+  const candidates: string[] = []
+
+  for (const root of roots) {
+    const blenderRoot = path.join(root, "Blender Foundation")
+    let entries: import("node:fs").Dirent[]
+    try {
+      entries = await fs.readdir(blenderRoot, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^Blender/i.test(entry.name)) continue
+      candidates.push(path.join(blenderRoot, entry.name, "blender.exe"))
+    }
+  }
+
+  return candidates
+}
+
+async function blenderCandidates() {
+  const configured = process.env.BLENDER_PATH ? [process.env.BLENDER_PATH] : []
+  const platformCandidates =
+    process.platform === "darwin"
+      ? await collectMacBlenderCandidates()
+      : process.platform === "win32"
+        ? await collectWindowsBlenderCandidates()
+        : ["/usr/local/bin/blender", "/usr/bin/blender", "/snap/bin/blender", "blender"]
+
+  return [...configured, ...platformCandidates, "blender"].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index)
+}
+
+function safeTempBlendName(name?: string) {
+  const base = name ? path.basename(name) : "input.blend"
+  const withoutControlChars = base.replace(/[\x00-\x1f\x7f]/g, "")
+  return withoutControlChars.toLowerCase().endsWith(".blend") ? withoutControlChars : `${withoutControlChars || "input"}.blend`
+}
+
+async function resolveBlendInputPath(payload: { filePath?: string; name?: string; data?: ArrayBuffer }, tempDir: string) {
+  if (payload.filePath && path.isAbsolute(payload.filePath) && (await existingFile(payload.filePath))) {
+    return payload.filePath
+  }
+
+  if (payload.data) {
+    const inputPath = path.join(tempDir, safeTempBlendName(payload.name ?? payload.filePath))
+    await fs.writeFile(inputPath, Buffer.from(payload.data))
+    return inputPath
+  }
+
+  if (payload.filePath) {
+    throw new Error(`BLENDファイルが見つかりません: ${payload.filePath}`)
+  }
+
+  throw new Error("BLEND変換に必要なファイル情報を取得できませんでした。")
+}
+
+async function convertBlendToGlb(payload: { filePath?: string; name?: string; data?: ArrayBuffer }) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "3d-preview-studio-blend-"))
+  const outputPath = path.join(tempDir, "converted.glb")
+  const python = [
+    "import bpy",
+    `output_path = ${JSON.stringify(outputPath)}`,
+    "bpy.ops.export_scene.gltf(filepath=output_path, export_format='GLB')",
+  ].join("; ")
+
+  try {
+    const inputPath = await resolveBlendInputPath(payload, tempDir)
+    let notFound = true
+    let lastError: unknown
+
+    for (const candidate of await blenderCandidates()) {
+      if (path.isAbsolute(candidate) && !(await existingFile(candidate))) continue
+
+      try {
+        await runProcess(candidate, ["--background", inputPath, "--python-expr", python])
+        notFound = false
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === "ENOENT") continue
+        notFound = false
+        lastError = error
+        break
+      }
+
+      try {
+        const data = await fs.readFile(outputPath)
+        return arrayBufferFromBuffer(data)
+      } catch (error) {
+        lastError = error
+        break
+      }
+    }
+
+    if (notFound) {
+      throw new Error("Blenderの実行ファイルが見つかりません。Blenderをインストールするか、BLENDER_PATHに実行ファイルのパスを設定してください。")
+    }
+
+    const detail = lastError instanceof Error ? lastError.message : "BlenderによるGLB変換に失敗しました。"
+    throw new Error(detail)
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true })
+  }
 }
 
 function setupIpc() {
@@ -165,6 +314,11 @@ function setupIpc() {
     if (result.canceled) return []
     const files = await Promise.all(result.filePaths.map(collectSupportedFiles))
     return files.flat()
+  })
+
+  ipcMain.handle("blend:convertToGlb", async (_event, payload: { filePath?: string; name?: string; data?: ArrayBuffer }) => {
+    const data = await convertBlendToGlb(payload)
+    return { data }
   })
 
   ipcMain.handle("file:saveDataUrl", async (_event, payload: { defaultPath: string; dataUrl: string; filters?: Electron.FileFilter[] }) => {

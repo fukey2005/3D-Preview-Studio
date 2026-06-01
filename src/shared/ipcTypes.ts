@@ -29,9 +29,20 @@ export type SaveMp4FromWebmPayload = {
   filters?: SaveDialogFilter[]
 }
 
+export type ConvertBlendToGlbPayload = {
+  filePath?: string
+  name?: string
+  data?: ArrayBuffer
+}
+
+export type ConvertBlendToGlbResult = {
+  data: ArrayBuffer
+}
+
 export type PreviewStudioBridge = {
   openFiles: () => Promise<PickedFile[]>
   openFolder: () => Promise<PickedFile[]>
+  convertBlendToGlb?: (payload: ConvertBlendToGlbPayload) => Promise<ConvertBlendToGlbResult>
   saveDataUrl: (payload: SaveDataUrlPayload) => Promise<{ canceled: boolean; filePath?: string }>
   saveBinary: (payload: SaveBinaryPayload) => Promise<{ canceled: boolean; filePath?: string }>
   saveMp4FromWebm: (payload: SaveMp4FromWebmPayload) => Promise<{ canceled: boolean; filePath?: string }>

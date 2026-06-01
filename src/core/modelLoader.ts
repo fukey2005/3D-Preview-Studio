@@ -18,6 +18,7 @@ import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js"
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js"
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js"
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
+import { TGALoader } from "three/examples/jsm/loaders/TGALoader.js"
 import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js"
 import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js"
 import occtWasmUrl from "occt-import-js/dist/occt-import-js.wasm?url"
@@ -26,9 +27,13 @@ import { extractFbxTextureLinks, type FbxTextureLink } from "./fbxTextureLinks"
 import type { AssetFile, LoadedModel, MissingAsset, ModelStats } from "./types"
 import { baseName, baseNameWithoutExtension, extensionFromPath, matchAssetByPath, normalizeAssetPath } from "./pathMatcher"
 
+export type ModelLoadOptions = {
+  convertBlendToGlb?: (asset: AssetFile) => Promise<ArrayBuffer>
+}
+
 let occtModulePromise: Promise<OcctImportModule> | null = null
 const textureExtensionSet = new Set<string>(textureExtensions)
-const browserTextureExtensions = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif"])
+const loadableTextureExtensions = new Set(["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga"])
 const binaryExtensionSet = new Set<string>(binaryExtensions)
 const materialExtensionSet = new Set<string>(materialExtensions)
 
@@ -107,6 +112,7 @@ export function collectMissingAssets(assets: AssetFile[], modelAsset: AssetFile)
 
 function createLoadingManager(assets: AssetFile[]) {
   const manager = new THREE.LoadingManager()
+  manager.addHandler(/\.tga$/i, new TGALoader(manager))
 
   manager.setURLModifier((url) => {
     const cleanUrl = normalizeAssetPath(url)
@@ -137,7 +143,7 @@ function matchTextureFallbackByBaseName(assets: AssetFile[], requestedPath: stri
 
   return assets.find((asset) => {
     if (asset.kind !== "texture") return false
-    if (!browserTextureExtensions.has(asset.extension)) return false
+    if (!loadableTextureExtensions.has(asset.extension)) return false
     return candidateBases.has(baseNameWithoutExtension(asset.path ?? asset.name).toLowerCase())
   })
 }
@@ -151,7 +157,7 @@ function textureFallbackBaseCandidates(requestedPath: string) {
 
   candidates.add(innerBase.toLowerCase())
 
-  if (browserTextureExtensions.has(innerExtension)) {
+  if (loadableTextureExtensions.has(innerExtension)) {
     candidates.add(stripTextureColorSpaceSuffix(innerBase).toLowerCase())
   }
 
@@ -195,7 +201,8 @@ function textureSlotForFbxLink(link: FbxTextureLink): TextureSlot | null {
 }
 
 function loadTextureForMaterial(asset: AssetFile, manager: THREE.LoadingManager, colorSpace: THREE.ColorSpace) {
-  const texture = new THREE.TextureLoader(manager).load(asset.objectUrl)
+  const loader = asset.extension === "tga" ? new TGALoader(manager) : new THREE.TextureLoader(manager)
+  const texture = loader.load(asset.objectUrl)
   texture.name = asset.name
   texture.colorSpace = colorSpace
   return texture
@@ -239,7 +246,7 @@ function applyFbxTextureLinks(object: THREE.Object3D, asset: AssetFile, assets: 
 
         const extension = extensionFromPath(link.texturePath)
         const textureAsset = matchAssetByRequestedUrl(assets, link.texturePath, extension)
-        if (!textureAsset || !browserTextureExtensions.has(textureAsset.extension)) continue
+        if (!textureAsset || !loadableTextureExtensions.has(textureAsset.extension)) continue
 
         const colorSpace = slot === "map" ? THREE.SRGBColorSpace : THREE.NoColorSpace
         const cacheKey = `${textureAsset.id}:${colorSpace}`
@@ -288,6 +295,16 @@ function geometryMesh(geometry: THREE.BufferGeometry, material?: THREE.Material 
   return new THREE.Mesh(geometry, material ?? defaultMaterial({ vertexColors: Boolean(geometry.getAttribute("color")) }))
 }
 
+function hasRenderableMesh(object: THREE.Object3D) {
+  let hasMesh = false
+  object.traverse((child) => {
+    if (hasMesh || !(child instanceof THREE.Mesh)) return
+    const positions = child.geometry.getAttribute("position")
+    hasMesh = Boolean(positions && positions.count > 0)
+  })
+  return hasMesh
+}
+
 function calculateStats(object: THREE.Object3D): ModelStats {
   const stats: ModelStats = { meshCount: 0, vertices: 0, triangles: 0 }
 
@@ -325,17 +342,24 @@ async function loadObj(assets: AssetFile[], asset: AssetFile, manager: THREE.Loa
   return objLoader.parse(asset.text)
 }
 
-async function loadGltf(asset: AssetFile, manager: THREE.LoadingManager) {
+function parseGltfBuffer(buffer: ArrayBuffer, manager: THREE.LoadingManager) {
   const loader = new GLTFLoader(manager)
+  return new Promise<THREE.Object3D>((resolve, reject) => {
+    loader.parse(buffer.slice(0), "", (gltf) => resolve(gltf.scene), reject)
+  })
+}
 
+async function loadGltf(asset: AssetFile, manager: THREE.LoadingManager) {
   if (asset.extension === "glb") {
-    return new Promise<THREE.Object3D>((resolve, reject) => {
-      loader.parse(asset.buffer.slice(0), "", (gltf) => resolve(gltf.scene), reject)
-    })
+    return parseGltfBuffer(asset.buffer, manager)
   }
 
+  const text = asset.text
+  if (!text) throw new Error("GLTF text could not be read.")
+
+  const loader = new GLTFLoader(manager)
   return new Promise<THREE.Object3D>((resolve, reject) => {
-    loader.load(asset.objectUrl, (gltf) => resolve(gltf.scene), undefined, reject)
+    loader.parse(text, "", (gltf) => resolve(gltf.scene), reject)
   })
 }
 
@@ -530,7 +554,7 @@ function applyBlendTransform(mesh: THREE.Mesh, object: BlendSceneObject) {
   mesh.matrixAutoUpdate = false
 }
 
-async function loadBlend(asset: AssetFile) {
+async function loadBlendNative(asset: AssetFile) {
   const data = parseBlend(new Uint8Array(arrayBuffer(asset)))
   const materialMap = new Map(extractMaterials(data).map((material) => [material.name, material]))
   const evaluatedMeshes = evaluateAllMeshes(data)
@@ -560,7 +584,41 @@ async function loadBlend(asset: AssetFile) {
   return group
 }
 
-export async function loadModelFromAssets(assets: AssetFile[], modelAssetId?: string): Promise<LoadedModel | null> {
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function blendLoadError(conversionError: unknown, nativeError: unknown) {
+  const details = [
+    conversionError ? `Blender変換: ${errorMessage(conversionError)}` : undefined,
+    nativeError ? `内蔵パーサー: ${errorMessage(nativeError)}` : undefined,
+  ].filter(Boolean)
+
+  return new Error(`BLENDファイルを読み込めませんでした。${details.join(" / ")}`)
+}
+
+async function loadBlend(asset: AssetFile, manager: THREE.LoadingManager, options: ModelLoadOptions) {
+  let conversionError: unknown
+
+  if (options.convertBlendToGlb) {
+    try {
+      const glb = await options.convertBlendToGlb(asset)
+      const object = await parseGltfBuffer(glb, manager)
+      if (!hasRenderableMesh(object)) throw new Error("変換後のGLBに表示可能なメッシュがありません。")
+      return object
+    } catch (error) {
+      conversionError = error
+    }
+  }
+
+  try {
+    return await loadBlendNative(asset)
+  } catch (nativeError) {
+    throw blendLoadError(conversionError, nativeError)
+  }
+}
+
+export async function loadModelFromAssets(assets: AssetFile[], modelAssetId?: string, options: ModelLoadOptions = {}): Promise<LoadedModel | null> {
   const modelAsset = modelAssetId ? assets.find((asset) => asset.id === modelAssetId) : assets.find((asset) => asset.kind === "model")
   if (!modelAsset) return null
 
@@ -600,7 +658,7 @@ export async function loadModelFromAssets(assets: AssetFile[], modelAssetId?: st
       object = await loadStep(modelAsset)
       break
     case "blend":
-      object = await loadBlend(modelAsset)
+      object = await loadBlend(modelAsset, manager, options)
       break
     default:
       throw new Error(`.${modelAsset.extension} is not supported yet.`)

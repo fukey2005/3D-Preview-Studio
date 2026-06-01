@@ -66,6 +66,13 @@ const browserFallbackBridge: PreviewStudioBridge = {
 
 const hasNativePreviewBridge = Boolean(window.previewStudio)
 const previewStudio = window.previewStudio ?? browserFallbackBridge
+const blendConverter = previewStudio.convertBlendToGlb
+  ? async (asset: AssetFile) => {
+      const result = await previewStudio.convertBlendToGlb?.({ filePath: asset.path, name: asset.name, data: asset.buffer })
+      if (!result) throw new Error("BLEND変換を開始できませんでした。")
+      return result.data
+    }
+  : undefined
 const colorStorageKey = "3d-preview-studio.color-presets"
 const grayColorPresets = [
   "#ffffff",
@@ -462,7 +469,7 @@ export default function App() {
       setError(null)
 
       try {
-        const model = await loadModelFromAssets(assets, activeModelId)
+        const model = await loadModelFromAssets(assets, activeModelId, { convertBlendToGlb: blendConverter })
         if (canceled) return
         setLoadedModel(model)
         setStatus(model ? `${model.sourceName} を読み込みました` : "モデルが見つかりません")

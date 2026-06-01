@@ -30,6 +30,7 @@ Windows では、インストーラー版またはポータブル版を利用で
 - OBJ / MTL / 画像テクスチャの読み込み
 - GLB / GLTF / STL / PLY / DAE / FBX / 3MF / USDZ / STEP / STP / BLENDの読み込み
 - フォルダ内アセットの再帰的な読み込み
+- Blenderがインストール済みの場合の `.blend` 自動GLB変換
 - Maya / Arnold 系FBXの baseColor / opacity / height テクスチャ接続の補正
 - GLTF外部 `.bin` / 画像参照の解決
 - Textured / Solid / Wireframe / Blueprint 表示
@@ -92,7 +93,7 @@ Windows では、インストーラー版またはポータブル版を利用で
 - OBJのテクスチャが表示されない場合は、参照先の `.mtl` と画像ファイルを同じプロジェクトに追加してください。
 - GLTFの外部ファイルが不足している場合は、Missing欄に不足ファイル名が表示されます。
 - STEP / STPはアプリ内でメッシュ化して表示します。元CADデータのNURBS編集情報は保持しません。
-- BLENDはメッシュプレビュー中心の対応です。未対応のモディファイアや古いBlender形式では表示できない場合があります。
+- BLENDは、Blenderがインストール済みの場合はBlender経由でGLBに自動変換して読み込みます。Blenderが見つからない場合は内蔵パーサーでBlender 5系のメッシュを読み込みます。Blenderの場所を自動検出できない場合は `BLENDER_PATH` に実行ファイルのパスを設定してください。
 - FBXが `.tx` を参照している場合は、同じベース名の `.png` / `.jpg` / `.webp` などを優先して使用します。
 
 ## License
