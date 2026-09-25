@@ -1,4 +1,4 @@
-name: Miku Astro build and WebGL verification
+name: Recover Miku benchmark build workspace
 on:
   push:
     branches: ["benchmark/webgl-20260925"]
@@ -10,7 +10,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,16 +18,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Restore authored source, apply verified refinements and fetch public model
+      - name: Restore benchmark source and public model
         run: |
           python3 - <<'PY'
           import base64,hashlib,io,pathlib,tarfile,urllib.request,zlib
           parts=sorted(pathlib.Path('source-parts').glob('part-*.b64'))
           data=base64.b64decode(''.join(p.read_text().strip() for p in parts))
-          assert hashlib.sha256(data).hexdigest()=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254','Source transfer integrity mismatch'
+          assert hashlib.sha256(data).hexdigest()=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254'
           with tarfile.open(fileobj=io.BytesIO(data),mode='r:xz') as archive: archive.extractall('.',filter='data')
           patch=zlib.decompress(base64.b64decode(pathlib.Path('refinement.b64').read_text()))
-          assert hashlib.sha256(patch).hexdigest()=='c27548bb21170701bf02a1962404864f6e8f7acad4ab4d98c63da81cf61b217b','Patch transfer integrity mismatch'
+          assert hashlib.sha256(patch).hexdigest()=='c27548bb21170701bf02a1962404864f6e8f7acad4ab4d98c63da81cf61b217b'
           pathlib.Path('refine.py').write_bytes(patch)
           dest=pathlib.Path('public/models/miku');dest.mkdir(parents=True,exist_ok=True)
           for name in ['miku_v2.pmd','eyeM2.bmp','readme.txt','readme_miku_v2.txt']:
@@ -36,16 +36,12 @@ jobs:
           python3 refine.py
       - run: npm install --no-fund --no-audit
       - run: npx tsc --noEmit
-      - run: npx playwright install --with-deps chromium
-      - run: node tests/verify.mjs
+      - name: Archive source and build dependencies for continued local work
+        run: |
+          tar -czf /tmp/miku-workspace.tgz src public tests package.json package-lock.json astro.config.mjs tsconfig.json node_modules refine.py
+          cp /tmp/miku-workspace.tgz .
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: miku-refined-${{ github.run_number }}
-          path: |
-            evidence/
-            dist/
-            public/art/
-            public/models/
-            package-lock.json
+          name: miku-workspace-recovery
+          path: miku-workspace.tgz
           retention-days: 7
