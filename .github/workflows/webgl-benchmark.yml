@@ -1,4 +1,4 @@
-name: Miku acceptance and distributable build
+name: Miku final acceptance
 on:
   push:
     branches: ["benchmark/webgl-20260925"]
@@ -21,24 +21,18 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          name: miku-final-8
+          name: miku-ready-10
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: fukey2005/3D-Preview-Studio
-          run-id: 36120203945
+          run-id: 36121972385
           path: .recovered
-      - name: Restore fully rendered assets and apply acceptance fixes
+      - name: Restore built assets and synchronize navigation
         run: |
           tar -xzf .recovered/verified-source.tgz
-          python3 acceptance-finish.py
+          python3 finish-navigation.py
       - run: npm ci --no-fund --no-audit
       - run: npx tsc --noEmit
       - run: npx playwright install --with-deps chromium
-      - name: Encode compatible WebM alternatives without rerendering geometry
-        run: |
-          command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
-          for film in public/motion/*.mp4; do
-            ffmpeg -v error -y -i "$film" -c:v libvpx-vp9 -b:v 0 -crf 28 -deadline good -cpu-used 4 -an "${film%.mp4}.webm"
-          done
       - name: Actual browser acceptance tests
         env:
           SKIP_ART: '1'
@@ -51,7 +45,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: miku-ready-${{ github.run_number }}
+          name: miku-release-${{ github.run_number }}
           path: |
             evidence-final/
             dist/
