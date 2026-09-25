@@ -1,4 +1,4 @@
-name: Miku creator model retrieval
+name: Miku creator download completion
 on:
   push:
     branches: ["benchmark/miku-v3-20260925"]
@@ -18,42 +18,28 @@ jobs:
         with: {node-version: 22}
       - run: npm install --no-save playwright@1.52.0
       - run: npx playwright install --with-deps chromium
-      - name: Follow successful public download form
+      - name: Save the original browser download
         run: |
           mkdir -p model-resource
           cat > get-model.mjs <<'JS'
           import {chromium} from 'playwright';import fs from 'node:fs/promises';
           const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
-          const ctx=await browser.newContext({acceptDownloads:true});const p=await ctx.newPage();
-          await p.goto('https://bowlroll.net/file/146088',{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(3000);
-          const check=p.waitForResponse(r=>r.url().includes('/146088/download-check'),{timeout:30000});
-          await p.locator('#file-show-download button[type=submit]').click();
-          const r=await check;const payload=await r.json();console.log(JSON.stringify(payload));
-          if(payload.status!=='success'||!payload.url)throw Error('Creator download not publicly authorized');
-          const download=await ctx.request.get(payload.url,{timeout:90000});console.log('DOWNLOAD',download.status(),download.headers());
-          const bytes=await download.body();await fs.writeFile('model-resource/Tda-V4X.zip',bytes);console.log('BYTES',bytes.length);
-          if(bytes[0]!==80||bytes[1]!==75)throw Error('Not a ZIP archive');
-          await fs.writeFile('model-resource/source.json',JSON.stringify({creator:'Tda',source:'https://bowlroll.net/file/146088',bytes:bytes.length,date:new Date().toISOString()},null,2));
-          await browser.close();
+          const ctx=await browser.newContext({acceptDownloads:true});const p=await ctx.newPage();const log=[];
+          p.on('response',r=>{if(r.url().includes('download')||r.url().includes('storage-file'))log.push({url:r.url(),status:r.status(),headers:r.headers()});});
+          try{
+           await p.goto('https://bowlroll.net/file/146088',{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(3000);
+           const promise=p.waitForEvent('download',{timeout:120000});
+           await p.locator('#file-show-download button[type=submit]').click();
+           const file=await promise;console.log('DOWNLOAD',file.suggestedFilename());await file.saveAs('model-resource/Tda-V4X.zip');
+           const bytes=await fs.readFile('model-resource/Tda-V4X.zip');console.log('SAVED',bytes.length);if(bytes[0]!==80||bytes[1]!==75)throw Error('Not a ZIP');
+           await fs.writeFile('model-resource/source.json',JSON.stringify({creator:'Tda',source:'https://bowlroll.net/file/146088',filename:file.suggestedFilename(),bytes:bytes.length},null,2));
+          }catch(e){console.log(e);await fs.writeFile('model-resource/error.html',await p.content());await p.screenshot({path:'model-resource/error.png'});process.exitCode=1;}
+          await fs.writeFile('model-resource/requests.json',JSON.stringify(log,null,2));await browser.close();
           JS
           node get-model.mjs
-          python3 - <<'PY'
-          import zipfile,pathlib
-          z=zipfile.ZipFile('model-resource/Tda-V4X.zip')
-          print(z.namelist())
-          for i in z.infolist():
-            if i.filename.lower().endswith('.txt'):
-              data=z.read(i)
-              for enc in ['utf-8-sig','cp932']:
-                try: txt=data.decode(enc);break
-                except UnicodeError:pass
-              else:txt=data.decode('utf-8',errors='replace')
-              print(i.filename,txt)
-              pathlib.Path('model-resource/'+str(i.header_offset)+'-readme.txt').write_text(txt)
-          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: miku-creator-model
+          name: miku-creator-model-complete
           path: model-resource/
           retention-days: 7
