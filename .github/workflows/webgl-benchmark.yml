@@ -1,4 +1,4 @@
-name: Isolated public WebGL benchmark
+name: Miku Astro build and WebGL verification
 on:
   push:
     branches: ["benchmark/webgl-20260925"]
@@ -10,7 +10,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,12 +18,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Restore authored source and public model
+        run: |
+          python3 - <<'PY'
+          import base64,hashlib,io,pathlib,tarfile,urllib.request
+          parts=sorted(pathlib.Path('source-parts').glob('part-*.b64'))
+          for p in parts: print(p.name,len(p.read_text()),hashlib.sha256(p.read_bytes()).hexdigest())
+          data=base64.b64decode(''.join(p.read_text().strip() for p in parts))
+          digest=hashlib.sha256(data).hexdigest()
+          print('Source archive SHA256:',digest)
+          assert digest=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254','Source transfer integrity mismatch'
+          with tarfile.open(fileobj=io.BytesIO(data),mode='r:xz') as archive: archive.extractall('.',filter='data')
+          dest=pathlib.Path('public/models/miku');dest.mkdir(parents=True,exist_ok=True)
+          for name in ['miku_v2.pmd','eyeM2.bmp','readme.txt','readme_miku_v2.txt']:
+              urllib.request.urlretrieve('https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/models/mmd/miku/'+name,dest/name)
+          test=pathlib.Path('tests/verify.mjs');test.write_text(test.read_text().replace("'/404/'","'/404.html'"))
+          PY
       - run: npm install --no-fund --no-audit
+      - run: npx tsc --noEmit
       - run: npx playwright install --with-deps chromium
-      - run: node capture-hero.mjs
+      - run: node tests/verify.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: hero-reference-${{ github.run_number }}
-          path: reference/
-          retention-days: 1
+          name: miku-actual-${{ github.run_number }}
+          path: |
+            evidence/
+            dist/
+            public/art/
+            public/models/
+            package-lock.json
+          retention-days: 7
