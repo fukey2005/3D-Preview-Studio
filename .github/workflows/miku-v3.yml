@@ -1,0 +1,66 @@
+name: Miku v3 reference and model resources
+on:
+  push:
+    branches: ["benchmark/miku-v3-20260925"]
+concurrency:
+  group: miku-v3
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-save playwright@1.52.0
+      - run: npx playwright install --with-deps chromium
+      - name: Public resource retrieval and reference capture
+        run: |
+          mkdir -p audit/vendor audit/models audit/reference
+          python3 - <<'PY'
+          import urllib.request,pathlib,json
+          base='https://raw.githubusercontent.com/mrdoob/three.js/r170/examples/jsm/'
+          for f in ['loaders/MMDLoader.js','shaders/MMDToonShader.js','libs/mmdparser.module.js']:
+              urllib.request.urlretrieve(base+f,pathlib.Path('audit/vendor')/pathlib.Path(f).name)
+          urllib.request.urlretrieve('https://raw.githubusercontent.com/mrdoob/three.js/r170/LICENSE','audit/vendor/LICENSE-three.txt')
+          PY
+          cat > capture-v3.mjs <<'JS'
+          import {chromium} from 'playwright';
+          import fs from 'node:fs/promises';
+          const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+          const ctx=await browser.newContext({viewport:{width:1440,height:900},acceptDownloads:true});
+          for(const [id,password] of [['146088',''],['146083','20170831']]){
+            const p=await ctx.newPage();const net=[];
+            p.on('response',async r=>{if(r.url().includes('bowlroll')&&r.headers()['content-type']?.includes('json')){net.push({url:r.url(),status:r.status(),data:await r.text().catch(()=>null)});}});
+            p.on('download',async d=>{console.log('DOWNLOAD',id,d.suggestedFilename());await d.saveAs('audit/models/'+id+'.zip');});
+            try{
+              await p.goto('https://bowlroll.net/file/'+id,{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(4500);
+              await fs.writeFile('audit/models/'+id+'.html',await p.content());
+              console.log('BOWL',id,(await p.locator('body').innerText()).slice(0,5000));
+              if(password){for(const input of await p.locator('input[type=password]').all())await input.fill(password);}
+              const buttons=p.getByRole('button',{name:/ダウンロード|Download/i});console.log('BUTTONS',await buttons.count());
+              if(await buttons.count())await buttons.first().click({timeout:10000});
+              await p.waitForTimeout(10000);
+              await fs.writeFile('audit/models/'+id+'-network.json',JSON.stringify(net,null,2));
+              await fs.writeFile('audit/models/'+id+'-after.html',await p.content());
+            }catch(e){console.log('BOWL ERROR',id,e.message);}await p.close();
+          }
+          const p=await ctx.newPage();await p.goto('https://alche.studio/',{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(14000);
+          const capture=async()=>p.evaluate(()=>({url:location.href,height:document.documentElement.scrollHeight,viewport:[innerWidth,innerHeight],headings:[...document.querySelectorAll('h1,h2,h3')].map(e=>({tag:e.tagName,text:e.textContent})),links:[...document.querySelectorAll('a')].map(e=>({text:e.textContent,href:e.getAttribute('href')})),sections:[...document.querySelectorAll('section,[data-scroll-section]')].map(e=>({id:e.id,class:e.className,top:e.getBoundingClientRect().top+scrollY,height:e.getBoundingClientRect().height,text:e.textContent.slice(0,250)})),body:document.body.innerText,controls:[...document.querySelectorAll('button,input,select')].map(e=>({tag:e.tagName,text:e.textContent,type:e.type}))}));
+          await fs.writeFile('audit/reference/home.json',JSON.stringify(await capture(),null,2));await fs.writeFile('audit/reference/home.html',await p.content());
+          const max=await p.evaluate(()=>document.documentElement.scrollHeight-innerHeight);
+          for(let i=0;i<=12;i++){await p.evaluate(y=>scrollTo(0,y),max*i/12);await p.waitForTimeout(1000);await p.screenshot({path:`audit/reference/home-${String(i).padStart(2,'0')}.png`});}
+          for(const path of ['/about/','/works/','/news/','/stellla/']){await p.goto('https://alche.studio'+path,{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(5000);await fs.writeFile('audit/reference/'+path.replaceAll('/','')+'.json',JSON.stringify(await capture(),null,2));await p.screenshot({path:'audit/reference/'+path.replaceAll('/','')+'.png',fullPage:true});}
+          await p.close();await ctx.close();await browser.close();
+          JS
+          node capture-v3.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-v3-audit
+          path: audit/
+          retention-days: 7
