@@ -2,12 +2,15 @@ name: Isolated public WebGL benchmark
 on:
   push:
     branches: ["benchmark/webgl-20260925"]
+concurrency:
+  group: miku-reference-benchmark
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,18 +20,10 @@ jobs:
           node-version: 22
       - run: npm install --no-fund --no-audit
       - run: npx playwright install --with-deps chromium
-      - run: node capture.mjs
-      - name: Package evidence
-        if: always()
-        run: |
-          mkdir -p artifact
-          cp package*.json artifact/ || true
-          tar -czf artifact/dependencies.tgz node_modules 2>/dev/null || true
-          if test -d reference; then cp -r reference artifact/; fi
-          if test -d public; then cp -r public artifact/; fi
+      - run: node capture-hero.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: webgl-benchmark-${{ github.run_number }}
-          path: artifact/
+          name: hero-reference-${{ github.run_number }}
+          path: reference/
           retention-days: 1
