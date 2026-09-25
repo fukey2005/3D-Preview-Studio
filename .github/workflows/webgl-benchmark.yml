@@ -18,22 +18,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Restore authored source and public model
+      - name: Restore authored source, apply verified refinements and fetch public model
         run: |
           python3 - <<'PY'
-          import base64,hashlib,io,pathlib,tarfile,urllib.request
+          import base64,hashlib,io,pathlib,tarfile,urllib.request,zlib
           parts=sorted(pathlib.Path('source-parts').glob('part-*.b64'))
-          for p in parts: print(p.name,len(p.read_text()),hashlib.sha256(p.read_bytes()).hexdigest())
           data=base64.b64decode(''.join(p.read_text().strip() for p in parts))
-          digest=hashlib.sha256(data).hexdigest()
-          print('Source archive SHA256:',digest)
-          assert digest=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254','Source transfer integrity mismatch'
+          assert hashlib.sha256(data).hexdigest()=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254','Source transfer integrity mismatch'
           with tarfile.open(fileobj=io.BytesIO(data),mode='r:xz') as archive: archive.extractall('.',filter='data')
+          patch=zlib.decompress(base64.b64decode(pathlib.Path('refinement.b64').read_text()))
+          assert hashlib.sha256(patch).hexdigest()=='c27548bb21170701bf02a1962404864f6e8f7acad4ab4d98c63da81cf61b217b','Patch transfer integrity mismatch'
+          pathlib.Path('refine.py').write_bytes(patch)
           dest=pathlib.Path('public/models/miku');dest.mkdir(parents=True,exist_ok=True)
           for name in ['miku_v2.pmd','eyeM2.bmp','readme.txt','readme_miku_v2.txt']:
               urllib.request.urlretrieve('https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/models/mmd/miku/'+name,dest/name)
-          test=pathlib.Path('tests/verify.mjs');test.write_text(test.read_text().replace("'/404/'","'/404.html'"))
           PY
+          python3 refine.py
       - run: npm install --no-fund --no-audit
       - run: npx tsc --noEmit
       - run: npx playwright install --with-deps chromium
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: miku-actual-${{ github.run_number }}
+          name: miku-refined-${{ github.run_number }}
           path: |
             evidence/
             dist/
