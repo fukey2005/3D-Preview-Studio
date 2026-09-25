@@ -1,8 +1,8 @@
-name: Miku v3 real WebGL preview
+name: Miku v3 final render and acceptance
 on:
   push:
     branches: ["benchmark/miku-v3-20260925"]
-    paths: [".github/workflows/miku-v3.yml", "v3-parts/**", "v3-fix.py"]
+    paths: [".github/workflows/miku-v3.yml", "v3-fix.py", "capture-v3-demo.mjs"]
 concurrency:
   group: miku-v3
   cancel-in-progress: true
@@ -10,9 +10,9 @@ permissions:
   contents: read
   actions: read
 jobs:
-  preview:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
@@ -20,76 +20,45 @@ jobs:
         with: {node-version: 22}
       - uses: actions/download-artifact@v4
         with:
-          name: miku-release-12
+          name: miku-v3-preview-10
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: fukey2005/3D-Preview-Studio
-          run-id: 36122629927
+          run-id: 36129382947
           path: .base
-      - uses: actions/download-artifact@v4
-        with:
-          name: miku-v3-audit
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: fukey2005/3D-Preview-Studio
-          run-id: 36126569762
-          path: .audit
-      - uses: actions/download-artifact@v4
-        with:
-          name: miku-creator-model-complete
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: fukey2005/3D-Preview-Studio
-          run-id: 36127521605
-          path: .model
-      - name: Restore source and apply authored opaque avatar revision
+      - name: Restore tested v3 source and edited GLB
         run: |
-          tar -xzf .base/verified-source.tgz
-          python3 - <<'PY'
-          import base64,lzma,pathlib,hashlib
-          data=lzma.decompress(base64.b64decode(''.join(p.read_text().strip() for p in sorted(pathlib.Path('v3-parts').glob('*.b64')))))
-          assert hashlib.sha256(data).hexdigest()=='ce7240035a1b7d91375f41a79b04bf28332a6ddbab47912a08810430bf4ade82'
-          pathlib.Path('v3.patch').write_bytes(data)
-          PY
-          patch -p1 < v3.patch
-          mkdir -p src/vendor
-          cp .audit/vendor/mmdparser.module.js src/vendor/
-          cp .audit/vendor/LICENSE-three.txt src/vendor/
-          python3 -m pip install pillow --quiet
-          python3 - <<'PY'
-          import zipfile,pathlib,shutil
-          from PIL import Image
-          root=pathlib.Path('.model/original');root.mkdir(parents=True,exist_ok=True)
-          with zipfile.ZipFile('.model/Tda-V4X.zip') as z:
-            for info in z.infolist():
-              name=info.filename
-              if not info.flag_bits&0x800:
-                try:name=name.encode('cp437').decode('cp932')
-                except UnicodeError:pass
-              f=root/name
-              if info.is_dir():f.mkdir(parents=True,exist_ok=True)
-              else:f.parent.mkdir(parents=True,exist_ok=True);f.write_bytes(z.read(info))
-          for f in root.rglob('*.tga'):
-            im=Image.open(f);im.thumbnail((2048,2048) if 'body' in f.name.lower() else (1024,1024));im.save(f.with_suffix('.png'))
-          pathlib.Path('original-model-path.txt').write_text(str(next(root.rglob('*.pmx'))))
-          dest=pathlib.Path('public/models/hero');dest.mkdir(parents=True,exist_ok=True)
-          for f in root.rglob('*.txt'):
-            shutil.copy2(f,dest/f.name)
-            if 'english' in f.name.lower():shutil.copy2(f,dest/'ReadMe_EN.txt')
-            else:shutil.copy2(f,dest/'ReadMe_JP.txt')
-          shutil.rmtree('public/models/miku',ignore_errors=True)
-          PY
+          tar -xzf .base/v3-source.tgz
+          python3 v3-fix.py
+          cp capture-v3-demo.mjs tests/capture-v3-demo.mjs
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/convert-tda.mjs "$(cat original-model-path.txt)" public/models/hero
       - run: npx tsc --noEmit
-      - run: npm run build
       - run: npx playwright install --with-deps chromium
-      - run: node tests/v3-preview.mjs
-      - name: Export revised source without the unmodified original model
+      - name: Install video encoder
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+      - name: Render all seventeen artworks and six videos, then test actual WebGL
+        env:
+          RENDER_MOTION: '1'
+          EVIDENCE_DIR: evidence-v3
+        run: node tests/verify.mjs
+        timeout-minutes: 23
+      - name: Capture desktop and mobile facial poses
+        if: always()
+        run: node tests/v3-preview.mjs
+        timeout-minutes: 3
+      - name: Record actual scroll expression sequence
+        if: always()
+        run: node tests/capture-v3-demo.mjs
+        timeout-minutes: 4
+      - name: Export revised source and built website
         if: always()
         run: tar -czf v3-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: miku-v3-preview-${{ github.run_number }}
+          name: miku-v3-final-${{ github.run_number }}
           path: |
+            evidence-v3/
             evidence-v3-preview/
+            dist/
             v3-source.tgz
           retention-days: 7
