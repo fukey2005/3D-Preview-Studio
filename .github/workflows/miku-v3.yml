@@ -1,45 +1,95 @@
-name: Miku creator download completion
+name: Miku v3 real WebGL preview
 on:
   push:
     branches: ["benchmark/miku-v3-20260925"]
+    paths: [".github/workflows/miku-v3.yml", "v3-parts/**", "v3-fix.py"]
 concurrency:
   group: miku-v3
   cancel-in-progress: true
 permissions:
   contents: read
+  actions: read
 jobs:
-  model:
+  preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
       - uses: actions/setup-node@v4
         with: {node-version: 22}
-      - run: npm install --no-save playwright@1.52.0
-      - run: npx playwright install --with-deps chromium
-      - name: Save the original browser download
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-release-12
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36122629927
+          path: .base
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-v3-audit
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36126569762
+          path: .audit
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-creator-model-complete
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36127521605
+          path: .model
+      - name: Restore source and apply authored opaque avatar revision
         run: |
-          mkdir -p model-resource
-          cat > get-model.mjs <<'JS'
-          import {chromium} from 'playwright';import fs from 'node:fs/promises';
-          const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
-          const ctx=await browser.newContext({acceptDownloads:true});const p=await ctx.newPage();const log=[];
-          p.on('response',r=>{if(r.url().includes('download')||r.url().includes('storage-file'))log.push({url:r.url(),status:r.status(),headers:r.headers()});});
-          try{
-           await p.goto('https://bowlroll.net/file/146088',{waitUntil:'domcontentloaded',timeout:60000});await p.waitForTimeout(3000);
-           const promise=p.waitForEvent('download',{timeout:120000});
-           await p.locator('#file-show-download button[type=submit]').click();
-           const file=await promise;console.log('DOWNLOAD',file.suggestedFilename());await file.saveAs('model-resource/Tda-V4X.zip');
-           const bytes=await fs.readFile('model-resource/Tda-V4X.zip');console.log('SAVED',bytes.length);if(bytes[0]!==80||bytes[1]!==75)throw Error('Not a ZIP');
-           await fs.writeFile('model-resource/source.json',JSON.stringify({creator:'Tda',source:'https://bowlroll.net/file/146088',filename:file.suggestedFilename(),bytes:bytes.length},null,2));
-          }catch(e){console.log(e);await fs.writeFile('model-resource/error.html',await p.content());await p.screenshot({path:'model-resource/error.png'});process.exitCode=1;}
-          await fs.writeFile('model-resource/requests.json',JSON.stringify(log,null,2));await browser.close();
-          JS
-          node get-model.mjs
+          tar -xzf .base/verified-source.tgz
+          python3 - <<'PY'
+          import base64,lzma,pathlib,hashlib
+          data=lzma.decompress(base64.b64decode(''.join(p.read_text().strip() for p in sorted(pathlib.Path('v3-parts').glob('*.b64')))))
+          assert hashlib.sha256(data).hexdigest()=='ce7240035a1b7d91375f41a79b04bf28332a6ddbab47912a08810430bf4ade82'
+          pathlib.Path('v3.patch').write_bytes(data)
+          PY
+          patch -p1 < v3.patch
+          mkdir -p src/vendor
+          cp .audit/vendor/mmdparser.module.js src/vendor/
+          cp .audit/vendor/LICENSE-three.txt src/vendor/
+          python3 -m pip install pillow --quiet
+          python3 - <<'PY'
+          import zipfile,pathlib,shutil
+          from PIL import Image
+          root=pathlib.Path('.model/original');root.mkdir(parents=True,exist_ok=True)
+          with zipfile.ZipFile('.model/Tda-V4X.zip') as z:
+            for info in z.infolist():
+              name=info.filename
+              if not info.flag_bits&0x800:
+                try:name=name.encode('cp437').decode('cp932')
+                except UnicodeError:pass
+              f=root/name
+              if info.is_dir():f.mkdir(parents=True,exist_ok=True)
+              else:f.parent.mkdir(parents=True,exist_ok=True);f.write_bytes(z.read(info))
+          for f in root.rglob('*.tga'):
+            im=Image.open(f);im.thumbnail((2048,2048) if 'body' in f.name.lower() else (1024,1024));im.save(f.with_suffix('.png'))
+          pathlib.Path('original-model-path.txt').write_text(str(next(root.rglob('*.pmx'))))
+          dest=pathlib.Path('public/models/hero');dest.mkdir(parents=True,exist_ok=True)
+          for f in root.rglob('*.txt'):
+            shutil.copy2(f,dest/f.name)
+            if 'english' in f.name.lower():shutil.copy2(f,dest/'ReadMe_EN.txt')
+            else:shutil.copy2(f,dest/'ReadMe_JP.txt')
+          shutil.rmtree('public/models/miku',ignore_errors=True)
+          PY
+      - run: npm ci --no-audit --no-fund
+      - run: node scripts/convert-tda.mjs "$(cat original-model-path.txt)" public/models/hero
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: node tests/v3-preview.mjs
+      - name: Export revised source without the unmodified original model
+        if: always()
+        run: tar -czf v3-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: miku-creator-model-complete
-          path: model-resource/
+          name: miku-v3-preview-${{ github.run_number }}
+          path: |
+            evidence-v3-preview/
+            v3-source.tgz
           retention-days: 7
