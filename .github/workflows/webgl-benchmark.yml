@@ -1,4 +1,4 @@
-name: Recover Miku benchmark build workspace
+name: Miku final motion build and browser verification
 on:
   push:
     branches: ["benchmark/webgl-20260925"]
@@ -10,7 +10,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,30 +18,53 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Restore benchmark source and public model
+      - name: Restore authored source and checked public model
         run: |
           python3 - <<'PY'
           import base64,hashlib,io,pathlib,tarfile,urllib.request,zlib
-          parts=sorted(pathlib.Path('source-parts').glob('part-*.b64'))
-          data=base64.b64decode(''.join(p.read_text().strip() for p in parts))
+          data=base64.b64decode(''.join(p.read_text().strip() for p in sorted(pathlib.Path('source-parts').glob('part-*.b64'))))
           assert hashlib.sha256(data).hexdigest()=='8cbadd5572da67f86337c25a88689207a487fe685a437efa518e24308b8be254'
-          with tarfile.open(fileobj=io.BytesIO(data),mode='r:xz') as archive: archive.extractall('.',filter='data')
-          patch=zlib.decompress(base64.b64decode(pathlib.Path('refinement.b64').read_text()))
-          assert hashlib.sha256(patch).hexdigest()=='c27548bb21170701bf02a1962404864f6e8f7acad4ab4d98c63da81cf61b217b'
-          pathlib.Path('refine.py').write_bytes(patch)
+          with tarfile.open(fileobj=io.BytesIO(data),mode='r:xz') as a:a.extractall('.',filter='data')
+          refinement=zlib.decompress(base64.b64decode(pathlib.Path('refinement.b64').read_text()))
+          assert hashlib.sha256(refinement).hexdigest()=='c27548bb21170701bf02a1962404864f6e8f7acad4ab4d98c63da81cf61b217b'
+          pathlib.Path('refine.py').write_bytes(refinement)
           dest=pathlib.Path('public/models/miku');dest.mkdir(parents=True,exist_ok=True)
           for name in ['miku_v2.pmd','eyeM2.bmp','readme.txt','readme_miku_v2.txt']:
               urllib.request.urlretrieve('https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/models/mmd/miku/'+name,dest/name)
+          model=(dest/'miku_v2.pmd').read_bytes()
+          assert hashlib.sha1(b'blob '+str(len(model)).encode()+b'\0'+model).hexdigest()=='5c88504144bd180083a7c5dce0b67d0fdb2f1a61'
           PY
           python3 refine.py
+          python3 - <<'PY'
+          import base64,hashlib,pathlib,zlib
+          encoded=pathlib.Path('final-diff.b64').read_text().replace('pjwqojQzLdf','pjwqojQxLdf')
+          patch=zlib.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest()=='8315a8b5727e829b68be3a1b65ff4281dfdd53f7411602dce3178a02d132dbcf','Final source integrity mismatch'
+          pathlib.Path('final.patch').write_bytes(patch)
+          PY
+          patch -p1 < final.patch
       - run: npm install --no-fund --no-audit
       - run: npx tsc --noEmit
-      - name: Archive source and build dependencies for continued local work
-        run: |
-          tar -czf /tmp/miku-workspace.tgz src public tests package.json package-lock.json astro.config.mjs tsconfig.json node_modules refine.py
-          cp /tmp/miku-workspace.tgz .
+      - run: npx playwright install --with-deps chromium
+      - name: Ensure video encoder
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+      - name: Render and test the actual built WebGL site
+        env:
+          RENDER_MOTION: '1'
+          EVIDENCE_DIR: evidence-final
+        run: node tests/verify.mjs
+      - name: Export verified source
+        if: always()
+        run: tar -czf verified-source.tgz src public tests package.json package-lock.json astro.config.mjs tsconfig.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: miku-workspace-recovery
-          path: miku-workspace.tgz
+          name: miku-final-${{ github.run_number }}
+          path: |
+            evidence-final/
+            dist/
+            public/art/
+            public/motion/
+            public/models/
+            verified-source.tgz
           retention-days: 7
