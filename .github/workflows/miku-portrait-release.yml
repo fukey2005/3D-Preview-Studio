@@ -1,0 +1,63 @@
+name: Miku portrait release verification
+on:
+  push:
+    branches: ["benchmark/miku-portrait-20260926"]
+    paths: [".github/workflows/miku-portrait-release.yml", "portrait-repair.py"]
+concurrency:
+  group: miku-portrait-release-20260926
+  cancel-in-progress: true
+permissions: {contents: read, actions: read}
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-portrait-final-1
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 36218022203
+          path: .base
+      - name: Apply actual head-animation and gallery framing repair
+        run: |
+          tar -xzf .base/portrait-source.tgz
+          python3 portrait-repair.py
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npx playwright install --with-deps chromium
+      - name: Full site and six movie decoders
+        env: {SKIP_ART: '1', EVIDENCE_DIR: 'portrait-core-tests'}
+        run: node tests/verify.mjs
+        timeout-minutes: 8
+      - name: Portrait, live facial targets, real wheel and mobile layout tests
+        if: always()
+        run: node tests/portrait-tests.mjs
+        timeout-minutes: 4
+      - name: Final desktop and mobile screenshots
+        if: always()
+        env: {REFERENCE: '0'}
+        run: node tests/portrait-review.mjs
+        timeout-minutes: 4
+      - name: Render actual website smile and wink video
+        if: always()
+        run: node tests/capture-portrait-demo.mjs
+        timeout-minutes: 5
+      - name: Export corrected source and static site
+        if: always()
+        run: tar -czf portrait-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-release-${{ github.run_number }}
+          path: |
+            portrait-core-tests/
+            portrait-evidence/
+            portrait-review/
+            portrait-demo/
+            dist/
+            portrait-source.tgz
+          retention-days: 7
