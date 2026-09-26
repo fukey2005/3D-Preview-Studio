@@ -1,0 +1,76 @@
+name: Miku portrait final acceptance
+on:
+  push:
+    branches: ["benchmark/miku-portrait-20260926"]
+    paths: [".github/workflows/miku-portrait-final.yml", "portrait-finish.py", "portrait-tests.mjs", "capture-portrait-demo.mjs"]
+concurrency:
+  group: miku-portrait-final-20260926
+  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-v3-final-12
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36130400656
+          path: .base
+      - name: Restore and apply reviewed portrait changes
+        run: |
+          tar -xzf .base/v3-source.tgz
+          python3 portrait-patch.py
+          python3 portrait-finish.py
+          cp portrait-review.mjs tests/portrait-review.mjs
+          cp portrait-tests.mjs tests/portrait-tests.mjs
+          cp capture-portrait-demo.mjs tests/capture-portrait-demo.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/portrait-review.mjs')
+          s=p.read_text().replace('await p.waitForTimeout(100);const info','await p.waitForTimeout(650);const info')
+          p.write_text(s)
+          PY
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npx playwright install --with-deps chromium
+      - name: Full site regression - real WebGL, routes, six video decoders
+        env: {SKIP_ART: '1', EVIDENCE_DIR: 'portrait-core-tests'}
+        run: node tests/verify.mjs
+        timeout-minutes: 8
+      - name: Portrait geometry, face morphs, real wheel input and mobile flow
+        if: always()
+        run: node tests/portrait-tests.mjs
+        timeout-minutes: 5
+      - name: Capture revised desktop and mobile stages
+        if: always()
+        env: {REFERENCE: '0'}
+        run: node tests/portrait-review.mjs
+        timeout-minutes: 4
+      - name: Record scroll-driven expression demo
+        if: always()
+        run: node tests/capture-portrait-demo.mjs
+        timeout-minutes: 5
+      - name: Package source and static website
+        if: always()
+        run: tar -czf portrait-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-final-${{ github.run_number }}
+          path: |
+            portrait-core-tests/
+            portrait-evidence/
+            portrait-review/
+            portrait-demo/
+            dist/
+            portrait-source.tgz
+          retention-days: 7
