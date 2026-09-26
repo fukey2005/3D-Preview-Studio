@@ -1,0 +1,45 @@
+name: Reference wheel and scroll audit
+on:
+  push:
+    branches: ["benchmark/miku-portrait-20260926"]
+    paths: [".github/workflows/reference-interaction-audit.yml"]
+permissions: {contents: read, actions: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-portrait-dependencies-2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 36217163414
+          path: .deps
+      - run: tar -xzf .deps/portrait-dependencies.tgz
+      - run: npx playwright install --with-deps chromium
+      - name: Inspect actual original canvas transforms after user wheel scrolling
+        run: |
+          cat > ref-audit.mjs <<'JS'
+          import {chromium} from 'playwright';import fs from 'node:fs/promises';
+          await fs.mkdir('reference-audit',{recursive:true});const b=await chromium.launch({headless:true,args:['--no-sandbox','--use-angle=swiftshader','--enable-unsafe-swiftshader']});const report={};
+          for(const [device,viewport] of [['desktop',{width:1440,height:900}],['mobile',{width:390,height:844}]]){
+           const ctx=await b.newContext({viewport,deviceScaleFactor:1});const p=await ctx.newPage();const state={errors:[]};report[device]=state;p.on('pageerror',e=>state.errors.push(String(e)));
+           try{
+            await p.goto('https://alche.studio/',{waitUntil:'domcontentloaded',timeout:90000});await p.waitForFunction(()=>{const e=document.getElementById('loading-overlay');return !e||getComputedStyle(e).display==='none'||Number(getComputedStyle(e).opacity)<.01},null,{timeout:120000});await p.waitForTimeout(5000);const d=p.locator('[data-sound-intro-decline]');if(await d.count())await d.click({force:true}).catch(()=>{});await p.waitForTimeout(1000);
+            const info=()=>p.evaluate(()=>({scroll:scrollY,viewport:[innerWidth,innerHeight],rects:[...document.querySelectorAll('header,canvas,footer,[data-works-content],[data-works-container],[data-mission-container],[data-vision-container],body,body>div')].map(e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return {name:e.tagName,class:e.className,id:e.id,x:r.x,y:r.y,w:r.width,h:r.height,transform:s.transform,position:s.position,display:s.display}})}));
+            state.hero=await info();await p.screenshot({path:'reference-audit/'+device+'-hero.png'});
+            const target=device==='desktop'?2332:2193;await p.mouse.wheel(0,target);await p.waitForTimeout(6500);state.wheel=await info();await p.screenshot({path:'reference-audit/'+device+'-works-wheel.png'});
+            await p.evaluate(y=>scrollTo(0,y),target);await p.waitForTimeout(6500);state.direct=await info();await p.screenshot({path:'reference-audit/'+device+'-works-direct.png'});
+            await p.evaluate(()=>scrollTo(0,9552.8));await p.waitForTimeout(3000);state.vision=await info();await p.screenshot({path:'reference-audit/'+device+'-vision-start.png'});
+           }catch(e){state.failure=String(e);}finally{await ctx.close();}
+          }await fs.writeFile('reference-audit/report.json',JSON.stringify(report,null,2));await b.close();
+          JS
+          node ref-audit.mjs
+        timeout-minutes: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: 'reference-wheel-audit', path: 'reference-audit/', retention-days: 7}
