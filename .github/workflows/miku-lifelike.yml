@@ -1,0 +1,74 @@
+name: Miku lifelike body and gaze verification
+on:
+  push:
+    branches: ["benchmark/miku-lifelike-20260926"]
+    paths: [".github/workflows/miku-lifelike.yml", "lifelike-repair.py"]
+permissions: {contents: read, actions: read}
+concurrency:
+  group: miku-lifelike-20260926
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-portrait-release-1
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 36218771952
+          path: .base
+      - name: Restore previous validated source and apply reviewed motion patch
+        run: |
+          tar -xzf .base/portrait-source.tgz
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64,lzma,hashlib
+          data=base64.b64decode(''.join(p.read_text() for p in sorted(Path('motion-parts').glob('*.b64'))))
+          assert hashlib.sha256(data).hexdigest()=='d6da99a3a9911b9dfe4a23c7d9d8febc18c43ae4f4dd994cb29daf1ab303b4be'
+          Path('lifelike.patch').write_bytes(lzma.decompress(data))
+          PY
+          patch -p1 --batch < lifelike.patch
+          if [ -f lifelike-repair.py ]; then python3 lifelike-repair.py; fi
+          node scripts/normalize-model-bounds.mjs
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: node tests/motion-unit.mjs
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Actual neck, shoulders, hands, fingers and cursor gaze tests
+        run: node tests/lifelike.mjs
+        timeout-minutes: 5
+      - name: Existing site, routes and video regression suite
+        if: always()
+        env: {SKIP_ART: '1', EVIDENCE_DIR: 'motion-core-tests'}
+        run: node tests/verify.mjs
+        timeout-minutes: 8
+      - name: Install encoder
+        if: always()
+        run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: Capture genuine animated body and pointer response
+        if: always()
+        run: |
+          node tests/lifelike-demo.mjs
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=width,height,r_frame_rate -of json motion-demo/MIKU-STUDIO-Lifelike-demo.mp4 > motion-demo/video.json
+          test -s motion-demo/MIKU-STUDIO-Lifelike-demo.mp4
+        timeout-minutes: 5
+      - name: Export source and static assets
+        if: always()
+        run: tar -czf lifelike-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-lifelike-${{ github.run_number }}
+          path: |
+            dist/
+            lifelike-source.tgz
+            motion-evidence/
+            motion-core-tests/
+            motion-demo/
+          retention-days: 7
