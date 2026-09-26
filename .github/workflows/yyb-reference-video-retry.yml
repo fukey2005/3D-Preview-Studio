@@ -1,0 +1,37 @@
+name: Continuous public reference recording
+on:
+  push:
+    branches: ['benchmark/yyb-video-20260927']
+    paths: ['.github/workflows/yyb-reference-video-retry.yml']
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: |
+          mkdir -p .video-inspection
+          printf '{"name":"video-inspection","private":true,"type":"module"}' > .video-inspection/package.json
+          cd .video-inspection
+          npm install playwright@1.52.0
+          npx playwright install --with-deps chromium
+      - name: Use already committed public-only inspection and uninterrupted recording script
+        run: |
+          python3 - <<'PY'
+          import yaml,subprocess
+          with open('.github/workflows/yyb-reference-video.yml') as f: data=yaml.safe_load(f)
+          for s in data['jobs']['inspect']['steps']:
+              if s.get('name','').startswith(('Inspect only','Record real')):
+                  subprocess.run(['bash','-e','-c',s['run']],check=True)
+          PY
+        timeout-minutes: 8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yyb-public-reference-video
+          path: yyb-reference/
+          retention-days: 3
