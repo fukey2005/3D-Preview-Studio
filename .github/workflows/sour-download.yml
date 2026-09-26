@@ -1,0 +1,29 @@
+name: Download public Sour model
+on:
+  push:
+    branches: [benchmark/anime-reference-20260926]
+    paths: [.github/workflows/sour-download.yml]
+permissions: {contents: read}
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: mkdir -p /tmp/model-inspect && cd /tmp/model-inspect && npm init -y && npm install playwright@1.52.0
+      - run: cd /tmp/model-inspect && npx playwright install --with-deps chromium
+      - run: |
+          cd /tmp/model-inspect
+          mkdir -p out
+          cat > download.mjs <<'JS'
+          import {chromium} from 'playwright';import fs from 'node:fs/promises';
+          const b=await chromium.launch();const p=await b.newPage({acceptDownloads:true});let report={};
+          try{await p.goto('https://bowlroll.net/file/146103',{waitUntil:'domcontentloaded',timeout:60000});const button=p.locator('#file-show-download-control button[type=submit]');await button.waitFor({timeout:30000});const d=p.waitForEvent('download',{timeout:60000});await button.click();const downloaded=await d;report={filename:downloaded.suggestedFilename(),url:downloaded.url()};await downloaded.saveAs('out/sour-miku.zip');}catch(e){report.error=String(e);await fs.writeFile('out/page.html',await p.content());await p.screenshot({path:'out/error.png'});}await fs.writeFile('out/report.json',JSON.stringify(report,null,2));await b.close();
+          JS
+          node download.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: sour-public-model, path: /tmp/model-inspect/out, retention-days: 3}
