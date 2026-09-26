@@ -1,0 +1,61 @@
+name: Miku portrait build and verification
+on:
+  push:
+    branches: ["benchmark/miku-v3-20260925"]
+    paths: [".github/workflows/miku-portrait.yml", "v4-portrait.py"]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: miku-portrait
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-v3-final-12
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36130400656
+          path: .base
+      - name: Restore existing site and apply portrait revision
+        run: |
+          tar -xzf .base/v3-source.tgz
+          python3 v4-portrait.py
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Capture revised portrait at desktop and mobile sizes
+        run: node tests/v3-preview.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miku-portrait-preview-${{ github.run_number }}
+          path: evidence-v4/
+          retention-days: 7
+      - name: Run existing full browser acceptance suite
+        env:
+          SKIP_ART: '1'
+          EVIDENCE_DIR: evidence-v4-acceptance
+        run: node tests/verify.mjs
+        timeout-minutes: 9
+      - name: Export revised source
+        if: always()
+        run: tar -czf v4-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-build-${{ github.run_number }}
+          path: |
+            evidence-v4/
+            evidence-v4-acceptance/
+            dist/
+            v4-source.tgz
+          retention-days: 7
