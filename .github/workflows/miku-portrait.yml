@@ -1,0 +1,67 @@
+name: Miku portrait framing and reference comparison
+on:
+  push:
+    branches: ["benchmark/miku-portrait-20260926"]
+    paths: [".github/workflows/miku-portrait.yml", "portrait-patch.py", "portrait-review.mjs", "portrait-finish.py", "portrait-tests.mjs"]
+concurrency:
+  group: miku-portrait-20260926
+  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-v3-final-12
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: fukey2005/3D-Preview-Studio
+          run-id: 36130400656
+          path: .base
+      - name: Restore and revise the existing tested implementation
+        run: |
+          tar -xzf .base/v3-source.tgz
+          python3 portrait-patch.py
+          if [ -f portrait-finish.py ]; then python3 portrait-finish.py; fi
+          cp portrait-review.mjs tests/portrait-review.mjs
+          if [ -f portrait-tests.mjs ]; then cp portrait-tests.mjs tests/portrait-tests.mjs; fi
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Capture actual portrait and live reference website
+        env: {REFERENCE: '1'}
+        run: node tests/portrait-review.mjs
+        timeout-minutes: 11
+      - name: New portrait acceptance checks
+        if: always()
+        run: if [ -f tests/portrait-tests.mjs ]; then node tests/portrait-tests.mjs; fi
+        timeout-minutes: 5
+      - name: Export complete source and compiled assets
+        if: always()
+        run: |
+          tar -czf portrait-source.tgz src public tests scripts package.json package-lock.json astro.config.mjs tsconfig.json
+          tar -czf portrait-dependencies.tgz node_modules
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-${{ github.run_number }}
+          path: |
+            portrait-review/
+            portrait-evidence/
+            dist/
+            portrait-source.tgz
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-dependencies-${{ github.run_number }}
+          path: portrait-dependencies.tgz
+          retention-days: 7
