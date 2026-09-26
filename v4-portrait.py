@@ -45,3 +45,6 @@ if(device==='desktop'){
 }
 await ctx.close();}"""
 assert needle in s;s=s.replace(needle,addition);s=s.replace('if(result.errors.length)process.exitCode=1;', 'if(result.errors.length||result.checks.some(c=>!c.passed))process.exitCode=1;');f.write_text(s)
+# The requested initial smile changed from 0.30 to 0.78. Verify its actual values,
+# instead of the old neutral-to-smile delta that can no longer fit the [0,1] range.
+f=p/'tests/verify.mjs';s=f.read_text();old="wink.avatar.morphs.smile>info.avatar.morphs.smile+.3&&wink.avatar.morphs.mouth>info.avatar.morphs.mouth";new="info.avatar.morphs.smile>=.75&&wink.avatar.morphs.smile>=.90&&wink.avatar.morphs.smile>info.avatar.morphs.smile+.10&&wink.avatar.morphs.mouth>info.avatar.morphs.mouth";assert old in s;s=s.replace(old,new);f.write_text(s)
