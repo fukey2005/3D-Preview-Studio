@@ -1,0 +1,48 @@
+name: Encode portrait demonstration
+on:
+  push:
+    branches: ["benchmark/miku-portrait-20260926"]
+    paths: [".github/workflows/miku-portrait-demo.yml"]
+permissions: {contents: read, actions: read}
+jobs:
+  encode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - uses: actions/download-artifact@v4
+        with:
+          name: miku-portrait-release-1
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 36218771952
+          path: .release
+      - name: Restore exact verified build and capture source
+        run: |
+          tar -xzf .release/portrait-source.tgz
+          cp -r .release/dist .
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/capture-portrait-demo.mjs');s=p.read_text().replace('if(r.status)throw Error(r.stderr);','if(r.error||r.status!==0)throw Error(String(r.error||r.stderr));');p.write_text(s)
+          PY
+      - run: npm ci --no-audit --no-fund
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: npx playwright install --with-deps chromium
+      - name: Capture real rendered frames and encode video
+        run: |
+          node tests/capture-portrait-demo.mjs
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,r_frame_rate -of json portrait-demo/MIKU-STUDIO-Portrait.mp4 > portrait-demo/ffprobe.json
+          test -s portrait-demo/MIKU-STUDIO-Portrait.mp4
+        timeout-minutes: 5
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: miku-portrait-demo
+          path: |
+            portrait-demo/
+            tests/capture-portrait-demo.mjs
+            .portrait-frames/
+          include-hidden-files: true
+          retention-days: 7
