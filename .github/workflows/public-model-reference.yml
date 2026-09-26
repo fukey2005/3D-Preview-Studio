@@ -1,0 +1,31 @@
+name: Public model and reference inspection
+on:
+  push:
+    branches: [benchmark/anime-reference-20260926]
+    paths: [.github/workflows/public-model-reference.yml]
+permissions: {contents: read}
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: mkdir -p /tmp/public-inspect && cd /tmp/public-inspect && npm init -y && npm install playwright@1.52.0
+      - run: cd /tmp/public-inspect && npx playwright install --with-deps chromium
+      - name: Use the normal public download control and inspect reference
+        run: |
+          cd /tmp/public-inspect
+          cat > inspect.mjs <<'JS'
+          import {chromium} from 'playwright';import fs from 'node:fs/promises';
+          await fs.mkdir('out',{recursive:true});const b=await chromium.launch({args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});const report={models:[],reference:[]};
+          for(const id of [146103]){const p=await b.newPage({acceptDownloads:true});const item={id};report.models.push(item);try{await p.goto('https://bowlroll.net/file/'+id,{waitUntil:'networkidle',timeout:60000});await fs.writeFile('out/model-'+id+'.html',await p.content());item.buttons=await p.locator('button,input[type=submit],input[type=button],a[download]').evaluateAll(es=>es.map(e=>({tag:e.tagName,id:e.id,text:e.textContent,value:e.value,classes:e.className})));const button=p.locator('#download_button,#download,button:has-text("ダウンロード"),input[value="ダウンロード"]').first();if(await button.count()){const download=p.waitForEvent('download',{timeout:40000});await button.click();try{const d=await download;item.filename=d.suggestedFilename();await d.saveAs('out/sour-miku.zip');item.downloaded=true;}catch(e){item.downloadError=String(e);await fs.writeFile('out/model-after.html',await p.content());}}await p.screenshot({path:'out/model-page.png'});}catch(e){item.error=String(e);}await p.close();}
+          for(const [device,viewport] of [['desktop',{width:1440,height:900}],['mobile',{width:390,height:844}]]){const p=await b.newPage({viewport});const item={device};report.reference.push(item);try{await p.goto('https://alche.studio/',{waitUntil:'domcontentloaded',timeout:60000});await p.waitForFunction(()=>{const e=document.getElementById('loading-overlay');return !e||getComputedStyle(e).display==='none'||Number(getComputedStyle(e).opacity)<.01},null,{timeout:100000});await p.waitForTimeout(3000);const decline=p.locator('[data-sound-intro-decline]');if(await decline.count())await decline.click({force:true});await p.waitForTimeout(500);await fs.writeFile('out/reference-'+device+'.html',await p.content());item.geometry=await p.evaluate(()=>[...document.querySelectorAll('header,nav,main>div,main>div>div,h1,h2,[data-scroll-track],canvas')].map(e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return {tag:e.tagName,class:e.className,attributes:[...e.attributes].filter(a=>a.name.startsWith('data-')).map(a=>[a.name,a.value]),text:e.textContent.slice(0,90),x:r.x,y:r.y+scrollY,w:r.width,h:r.height,position:s.position,fontSize:s.fontSize,fontFamily:s.fontFamily,fontWeight:s.fontWeight,lineHeight:s.lineHeight,color:s.color,letterSpacing:s.letterSpacing}}));item.height=await p.evaluate(()=>document.documentElement.scrollHeight);for(const [label,y] of [['hero',0],['works',device==='desktop'?2332:2193],['mission',device==='desktop'?10432:9000],['vision',device==='desktop'?12100:9700],['service',device==='desktop'?15500:12200],['platform',device==='desktop'?19900:16500],['footer',device==='desktop'?21400:17300]]){await p.evaluate(y=>scrollTo(0,y),y);await p.waitForTimeout(1700);await p.screenshot({path:'out/reference-'+device+'-'+label+'.png'});}if(device==='desktop'){const css=await p.locator('link[rel=stylesheet]').evaluateAll(es=>es.map(e=>e.href));for(let i=0;i<css.length;i++){const r=await p.request.get(css[i]);await fs.writeFile('out/ref-'+i+'.css',await r.body());}}}catch(e){item.error=String(e);}await p.close();}
+          await fs.writeFile('out/report.json',JSON.stringify(report,null,2));await b.close();
+          JS
+          node inspect.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: public-anime-reference, path: /tmp/public-inspect/out, retention-days: 3}
