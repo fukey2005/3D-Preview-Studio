@@ -1,0 +1,11 @@
+import {chromium} from 'playwright';import fs from 'node:fs/promises';import {spawn,spawnSync} from 'node:child_process';
+const out='portrait-demo';await fs.mkdir(out,{recursive:true});await fs.mkdir('.portrait-frames',{recursive:true});const server=spawn('python3',['-m','http.server','4173','--bind','127.0.0.1','--directory','dist'],{stdio:'ignore'});await new Promise(r=>setTimeout(r,700));const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-angle=swiftshader','--enable-unsafe-swiftshader','--disable-dev-shm-usage']});
+const p=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1});const trace=[],errors=[];p.on('pageerror',e=>errors.push(String(e)));
+try{await p.goto('http://127.0.0.1:4173/',{waitUntil:'domcontentloaded'});await p.waitForFunction(()=>window.__MIKU_CAPTURE_READY||window.__MIKU_ERROR,null,{timeout:120000});const error=await p.evaluate(()=>window.__MIKU_ERROR);if(error)throw Error(error);await p.evaluate(()=>{window.__MIKU.freeze(2);document.querySelector('[data-dismiss-sound]')?.click()});await p.waitForTimeout(1000);
+for(let i=0;i<144;i++){
+ let stage='kv',progress=0;const time=2+i/16;
+ if(i<12)progress=0;else if(i<72)progress=.77*(i-12)/59;else if(i<87)progress=.77;else if(i<122)progress=.77*(1-(i-87)/34);else{stage='vision';progress=.2+(i-122)/21*.26;}
+ const state=await p.evaluate(([stage,progress,time])=>{window.__MIKU.freeze(time);window.__MIKU.seek(stage,progress);const s=window.__MIKU.inspect();return {stage,progress,face:s.face,rotation:s.rotation,framing:s.framing};},[stage,progress,time]);trace.push(state);
+ await p.screenshot({path:'.portrait-frames/'+String(i).padStart(3,'0')+'.jpg',type:'jpeg',quality:93,timeout:60000});}
+const r=spawnSync('ffmpeg',['-y','-v','error','-framerate','16','-i','.portrait-frames/%03d.jpg','-vf','fps=32','-c:v','libx264','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',out+'/MIKU-STUDIO-Portrait.mp4'],{encoding:'utf8'});if(r.status)throw Error(r.stderr);await fs.writeFile(out+'/trace.json',JSON.stringify({method:'Actual compiled Three.js page, deterministic per-frame scroll and pose, encoded playback; not a hardware FPS benchmark',trace,errors},null,2));if(errors.length)throw Error(errors.join('\n'));
+}finally{await browser.close();server.kill();}
